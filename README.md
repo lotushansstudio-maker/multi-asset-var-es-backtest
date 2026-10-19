@@ -29,11 +29,12 @@ Losses are positive numbers, so a 99% VaR of 1.2% means "a one-day loss larger t
 
 ## Key findings
 
-- **None of the three models passes the 99% VaR backtest over 2008 to 2026.** Breaches run 31% to 82% above the 47 expected, and they cluster in crises (Christoffersen independence rejected for all three). The portfolio's daily loss tail is fatter, and arrives more suddenly, than any of the models allows.
-- **GARCH(1,1) with Student-t errors comes closest:** 65 breaches, the fewest back-to-back breaches (4), the Basel red zone in only 1.7% of 250-day windows, and the best Expected Shortfall test (Z2 of 0.19, not rejected).
-- **EWMA with normal returns is worst at 99% but fine at 95%** (239 breaches against 236 expected). The normal distribution describes ordinary days well and the tail badly.
-- **Historical simulation reacts too slowly.** It had 15 breaches against 1.5 expected in the 2008 to 2009 crisis, and on the worst day of the test (18 March 2020, a 4.57% loss) its 99% VaR was 1.26%, against about 3.6% for EWMA and GARCH.
-- **2022 hurt every model** (5 to 7 breaches against 2.5 expected), when stocks and bonds fell together. This is consistent with the limitation that the models work on the portfolio return and do not track the stock-bond correlation directly.
+- **None of the three standard models passes the 99% VaR backtest over 2008 to 2026.** Historical simulation, EWMA and GARCH-t breach 62 to 86 times against 47 expected, and their breaches cluster in crises.
+- **Filtered historical simulation does best.** It combines GJR-GARCH volatility with the empirical tail of past standardised residuals. With 61 breaches (Kupiec p 0.055) it is the only model that passes both the breach-rate and the Christoffersen independence tests, with the fewest back-to-back breaches (2) and the best ES test (Z2 of 0.15). It still fails the stricter dynamic quantile test (p 0.023).
+- **Out of sample, the gain is smaller.** GJR-GARCH and filtered historical simulation were added after the first results, so 2019 to 2026 is the fairer test. There every model breaches too often: filtered HS 31, GARCH 32 and GJR 36 against 20 expected; historical simulation has 24 but they are heavily clustered (independence p 0.002). Out of sample, what filtered HS mainly fixes is clustering, not the breach count.
+- **Historical simulation reacts too slowly.** It had 15 breaches against 1.5 expected in the 2008 to 2009 crisis. On the worst day of the test, 18 March 2020 (a 4.57% loss), its 99% VaR was 1.26%, against 4.21% for filtered HS and 3.60% for GARCH.
+- **EWMA with normal returns is worst at 99% (86 breaches) but fine at 95%** (239 breaches against 236 expected). The normal distribution describes ordinary days well and the tail badly.
+- **The risk decomposition shows the stock-bond hedge weakening.** In the 2008 crisis equities made up 92% of the portfolio's 99% VaR and Treasuries slightly reduced it (SPY-TLT correlation -0.48). In 2022 the correlation was about zero and Treasuries carried 39% of the risk. On the latest day the correlation is +0.21 and Treasuries (41%) contribute more than equities (35%). In 2022 the standard models breached 5 to 7 times against 2.5 expected; filtered HS breached 3 times.
 - **Expected Shortfall is not rejected for any model** (all Z2 values below 0.70), so the size of losses beyond VaR was roughly right even where the frequency of breaches was not.
 
 ## Results
