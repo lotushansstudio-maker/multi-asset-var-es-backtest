@@ -8,13 +8,14 @@ import yfinance as yf
 from common import ASSETS, DATA
 
 START = "2006-01-01"   # FXE, the youngest ETF, starts in December 2005
+END = "2026-10-17"     # fixed so results are reproducible; yfinance's end is exclusive, so the last day is 2026-10-16
 
 
 def main():
     os.makedirs(DATA, exist_ok=True)
     adj = {}
     for t in ASSETS:
-        h = yf.Ticker(t).history(start=START, interval="1d", auto_adjust=False)
+        h = yf.Ticker(t).history(start=START, end=END, interval="1d", auto_adjust=False)
         if h.empty:
             raise SystemExit(f"No data for {t}; check your connection and try again.")
         h.index = h.index.tz_localize(None).normalize()

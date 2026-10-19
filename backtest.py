@@ -12,16 +12,20 @@ from scipy import stats
 
 from common import ROOT, ASSETS, WEIGHTS, portfolio_returns, write_readme
 import models
+import decompose
 
 WINDOW = 500          # history needed before the first forecast (about two years)
 STRESS = {"Global financial crisis (Sep 2008 to Mar 2009)": ("2008-09-01", "2009-03-31"),
           "COVID crash (20 Feb to 30 Apr 2020)": ("2020-02-20", "2020-04-30"),
           "Rates shock (2022)": ("2022-01-01", "2022-12-31")}
-NAMES = {"hs": "Historical simulation (500 days)", "ewma": "EWMA, lambda 0.94 (normal)", "garch": "GARCH(1,1), Student-t"}
-SHORT = {"hs": "historical simulation", "ewma": "EWMA", "garch": "GARCH"}
-COLORS = {"hs": "#c2410c", "ewma": "#2563eb", "garch": "#15803d"}
-MARKERS = {"hs": "o", "ewma": "s", "garch": "^"}
-SHIFT = {"hs": pd.Timedelta(hours=-10), "ewma": pd.Timedelta(0), "garch": pd.Timedelta(hours=10)}
+SUBPERIODS = {"2008 to 2018 (selection)": ("2008-01-01", "2018-12-31"),
+              "2019 to 2026-10-16 (hold-out)": ("2019-01-01", "2026-10-16")}
+NAMES = {"hs": "Historical simulation (500 days)", "ewma": "EWMA, lambda 0.94 (normal)", "garch": "GARCH(1,1), Student-t",
+         "gjr": "GJR-GARCH, Student-t", "fhs": "Filtered historical simulation (GJR)"}
+SHORT = {"hs": "historical simulation", "ewma": "EWMA", "garch": "GARCH", "gjr": "GJR-GARCH", "fhs": "filtered HS"}
+COLORS = {"hs": "#c2410c", "ewma": "#2563eb", "garch": "#15803d", "gjr": "#7c3aed", "fhs": "#db2777"}
+MARKERS = {"hs": "o", "ewma": "s", "garch": "^", "gjr": "D", "fhs": "v"}
+SHIFT = {k: pd.Timedelta(hours=h) for k, h in zip(NAMES, (-16, -8, 0, 8, 16))}
 
 
 # ---------- backtests ----------
@@ -49,6 +53,17 @@ def christoffersen(hits):
     return lr, 1 - stats.chi2.cdf(lr, 1), n11
 
 
+def dq_test(hits, var, p, lags=4):
+    """Engle-Manganelli (2004) dynamic quantile test: regress hit_t - p on a constant, the last `lags` hits and
+    today's VaR. If the model is right nothing should predict a breach, so all coefficients are zero."""
+    h = hits.astype(float).values - p
+    X = np.column_stack([np.ones(len(h) - lags)] + [h[lags - k:len(h) - k] for k in range(1, lags + 1)] + [var.values[lags:]])
+    y = h[lags:]
+    b = np.linalg.lstsq(X, y, rcond=None)[0]
+    dq = b @ X.T @ X @ b / (p * (1 - p))
+    return dq, 1 - stats.chi2.cdf(dq, X.shape[1])
+
+
 def acerbi_z2(loss, var, es, a=0.975):
     """Acerbi-Szekely (2014) Z2 test for ES, written for losses. Expected value 0 if ES is right;
     positive means losses beyond VaR were worse than forecast. Their approximate thresholds:
@@ -70,8 +85,9 @@ def evaluate(loss, f):
     lr_ind, p_ind, clusters = christoffersen(h99)
     p_cc = 1 - stats.chi2.cdf(lr_uc + lr_ind, 2)
     g, y, r, _ = traffic_light(h99)
+    _, p_dq = dq_test(h99, f["VaR0.99"], 0.01)
     return {"breaches": int(h99.sum()), "expected": len(loss) * 0.01, "rate": h99.mean(),
-            "kupiec_p": p_uc, "ind_p": p_ind, "cc_p": p_cc, "back_to_back": clusters,
+            "kupiec_p": p_uc, "ind_p": p_ind, "cc_p": p_cc, "dq_p": p_dq, "back_to_back": clusters,
             "green": g, "yellow": y, "red": r,
             "z2": acerbi_z2(loss, f["VaR0.975"], f["ES0.975"]), "breaches975": int(h975.sum()),
             "avg_var": f["VaR0.99"].mean(), "avg_es": f["ES0.975"].mean()}
@@ -87,7 +103,7 @@ def verdict(e):
         return "too many breaches"
     if e["kupiec_p"] < 0.05:
         return "too conservative"
-    if e["ind_p"] < 0.05:
+    if e["ind_p"] < 0.05 or e["dq_p"] < 0.05:
         return "right rate, but breaches cluster"
     return "passes"
 
@@ -97,6 +113,8 @@ def main():
     loss = -r
     fc = {"hs": models.historical(loss, WINDOW), "ewma": models.ewma(r)}
     fc["garch"], params = models.garch(r, start=WINDOW)
+    fc["gjr"], params_gjr = models.garch(r, start=WINDOW, asym=True)
+    fc["fhs"], _ = models.garch(r, start=WINDOW, asym=True, fhs=True)
     test = loss.index[WINDOW:]
     loss_t = loss.loc[test]
     fc = {k: v.loc[test] for k, v in fc.items()}
@@ -106,6 +124,7 @@ def main():
     os.makedirs(os.path.join(ROOT, "charts"), exist_ok=True)
     pd.concat({k: v for k, v in fc.items()}, axis=1).assign(loss=loss_t).to_csv(os.path.join(ROOT, "results", "forecasts.csv"))
     params.to_csv(os.path.join(ROOT, "results", "garch_params.csv"))
+    params_gjr.to_csv(os.path.join(ROOT, "results", "gjr_params.csv"))
 
     ev = {k: evaluate(loss_t, fc[k]) for k in fc}
     bt = pd.DataFrame(ev).T
@@ -122,6 +141,7 @@ def main():
             ("Kupiec p-value (breach rate = 1%?)", lambda e: pv(e["kupiec_p"])),
             ("Christoffersen independence p-value", lambda e: pv(e["ind_p"])),
             ("Conditional coverage p-value", lambda e: pv(e["cc_p"])),
+            ("Engle-Manganelli dynamic quantile p-value", lambda e: pv(e["dq_p"])),
             ("Back-to-back breaches", lambda e: str(e["back_to_back"])),
             ("Share of 250-day windows in Basel red zone (10+ breaches)", lambda e: pct(e["red"], 1)),
             ("97.5% ES test, Acerbi-Szekely Z2 (0 = right; >0.70 rejects)", lambda e: f"{e['z2']:.2f}"),
@@ -132,7 +152,21 @@ def main():
         lines.append(f"| {label} | " + " | ".join(fn(ev[k]) for k in fc) + " |")
     p_last = params.iloc[-1]
     lines += ["", f"Latest GARCH fit ({params.index[-1].date()}): alpha {p_last.alpha:.3f}, beta {p_last.beta:.3f}, "
-              f"persistence {p_last.alpha + p_last.beta:.3f}, Student-t degrees of freedom {p_last.nu:.1f}."]
+              f"persistence {p_last.alpha + p_last.beta:.3f}, Student-t degrees of freedom {p_last.nu:.1f}. "
+              f"Latest GJR-GARCH fit: alpha {params_gjr.iloc[-1].alpha:.3f}, gamma (extra effect of a loss) {params_gjr.iloc[-1].gamma:.3f}, "
+              f"beta {params_gjr.iloc[-1].beta:.3f}."]
+    # sub-periods: GJR and filtered HS were added after the first results, so 2019 onwards is the fairer test
+    lines += ["", "**By sub-period.** GJR-GARCH and filtered historical simulation were added after the first results "
+              "(three models, full period) had been seen, so 2008 to 2018 is in effect the period the models were chosen on "
+              "and 2019 onwards is the fairer, hold-out test.", "",
+              "| Period | Days | Expected | " + " | ".join(NAMES[k] for k in fc) + " |", "|---|---|---|" + "---|" * len(fc)]
+    for label, (a, b) in SUBPERIODS.items():
+        m = (loss_t.index >= a) & (loss_t.index <= b)
+        cells = []
+        for k in fc:
+            h = loss_t[m] > fc[k]["VaR0.99"][m]
+            cells.append(f"{int(h.sum())} (Kupiec {pv(kupiec(h, 0.01)[1])}, ind. {pv(christoffersen(h)[1])})")
+        lines.append(f"| {label} | {m.sum()} | {m.sum() * 0.01:.0f} | " + " | ".join(cells) + " |")
     write_readme("RESULTS", "\n".join(lines))
 
     # ---------- stress periods ----------
@@ -168,12 +202,12 @@ def main():
     plt.rcParams.update({"font.size": 9, "axes.spines.top": False, "axes.spines.right": False})
     fig, ax = plt.subplots(figsize=(10, 4.2))
     ax.vlines(loss_t.index, 0, loss_t.clip(lower=0) * 100, color="#6b7280", lw=0.6, label="Daily loss")
-    for k in fc:
+    for k in ("hs", "garch", "fhs"):   # EWMA and GJR track GARCH closely; five lines would be unreadable
         ax.plot(fc[k].index, fc[k]["VaR0.99"] * 100, lw=0.8, alpha=0.9, color=COLORS[k], label=f"99% VaR: {NAMES[k]}")
     gh = loss_t > fc["garch"]["VaR0.99"]
     ax.scatter(loss_t[gh].index, loss_t[gh] * 100, s=8, color="black", zorder=3, label="Breach of GARCH 99% VaR")
     ax.set_ylabel("One-day loss, %"); ax.legend(frameon=False, loc="upper right")
-    ax.set_title("Daily portfolio losses and one-day 99% VaR forecasts", loc="left")
+    ax.set_title("Daily portfolio losses and one-day 99% VaR forecasts (three of the five models)", loc="left")
     fig.tight_layout(); fig.savefig(os.path.join(ROOT, "charts", "var_full.png"), dpi=150); plt.close(fig)
 
     zoom = (loss_t.index >= "2020-01-15") & (loss_t.index <= "2020-06-30")
@@ -204,8 +238,9 @@ def main():
 
     for k in fc:
         e = ev[k]
-        print(f"{k:6s} breaches {e['breaches']:3d}/{e['expected']:.0f}  kupiec {e['kupiec_p']:.3f}  ind {e['ind_p']:.3f}  "
+        print(f"{k:6s} breaches {e['breaches']:3d}/{e['expected']:.0f}  kupiec {e['kupiec_p']:.3f}  ind {e['ind_p']:.3f}  dq {e['dq_p']:.3f}  "
               f"red {e['red']:.1%}  Z2 {e['z2']:.2f}  avgVaR {e['avg_var']:.2%}")
+    decompose.main()
     print("README.md, results/ and charts/ updated")
 
 
